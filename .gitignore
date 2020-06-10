@@ -141,3 +141,7 @@ dmypy.json
 # Extra by me (jesse)
 .DS_Store
 .\#*
+
+# Extra by Guido
+.idea/
+.vscode/
