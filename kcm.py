@@ -9,6 +9,8 @@
 
 # ------------------------------------------------------------
 
+import logging
+
 import numpy as np
 import matplotlib.pyplot as plt
 import scipy.optimize as optimize
@@ -136,18 +138,24 @@ class SoftenedFA(KCM):
 
     This class produces a single trajectory.
 
-    The rate for flipping a spin 0 -> 1 is ``= weight_activation * C_i``
-    The rate for flipping a spin 1 -> 0 is ``= weight_activation * inactivation_ratio * C_i``
-    The rate of swapping (0, 1) -> (1,0) is ``=rate_activation * rate_swap``
+    # Params
+    s is the biasing_field
+    gamma is how much faster a mobile site deactivates (in a mobile region) than an immobile site activates (in the same region)
+    epsilon is the softening parameter: it determines to what extent sites that are in an immobile region can still activate/deactivate
+
+    The rate for flipping a spin 0 -> 1 is ``= C_i``
+    The rate for flipping a spin 1 -> 0 is ``= gamma * C_i``
+    The rate of swapping (0, 1) -> (1,0) is ``= rate_swap``
+
+    C_i = \sum_{j \in nn(i)} [n_j+ (\epsilon/2)]
 
     """
 
-    def __init__(self, rate_swap=None, biasing_field=None, temperature=1., coupling_energy=0., inactivation_ratio=None, softening_param=0., num_sites=50, num_steps=100, num_burnin_steps=0):
+    def __init__(self, s=None, eps=0., gamma=1., num_sites=50, num_steps=100, num_burnin_steps=0):
         """
-        :param float rate_swap: The swapping rate for the transition (0, 1) -> (1, 0)
-        :param float temperature: The temperature which controls the transition rate 1 -> 0
-        :param float coupling_energy: The energy which together with the temperature controls the transition rate 1 -> 0
-        :param float softening_param: The extent to which even immobile regions are allowed to become mobile
+        :param float s: The biasing field that determines the rate of swaps. Defaults to the critical biasing field value.
+        :param float eps: The amount of softening to which even immobile regions are allowed to become mobile
+        :param float gamma: The relative rate of inactivation vs activation in the mobile region.
         :Param int num_sites: The number of sites to include in the chain.
         :param int num_steps: The number of steps to include in a trajectory.
         :param int num_burnin_steps: The number of steps to equilibrate a
@@ -155,57 +163,53 @@ class SoftenedFA(KCM):
 
         """
         super(SoftenedFA, self).__init__(0., num_sites, num_steps, num_burnin_steps)
-        self.temperature = temperature
-        self.softening_param = softening_param
-        self.coupling_energy  = coupling_energy
 
-        # Derived quanities
-        if inactivation_ratio is None:
-            inactivation_ratio = np.exp(-coupling_energy / temperature) # Defaults to 1. i.e. 0 -> 1 is as likely as 1 -> 0
+        # MODEL PARAMETERS
 
-        self.inactivation_ratio = inactivation_ratio
+        if s is None:
+            s = self.get_critical_s()
 
-        # Rates
-        self.get_neighbor_constraint = lambda neighbors: (np.sum(neighbors) + np.size(neighbors) * self.softening_param / 2)
+        self.s = s
+
+        self.eps = eps
+        self.gamma = gamma
+
+        # TRANSITION RATES
+
+        self.rate_swap = self.get_rate_swap(s)
+        self.get_neighbor_constraint = lambda neighbors: (np.sum(neighbors) + np.size(neighbors) * self.eps / 2)
         self.get_rate_activation = lambda neighbors:  self.get_neighbor_constraint(neighbors)
-        self.get_rate_inactivation = lambda neighbors:  (self.inactivation_ratio * self.get_neighbor_constraint(neighbors))
+        self.get_rate_inactivation = lambda neighbors:  (self.gamma * self.get_neighbor_constraint(neighbors))
 
-        # Probabilities
-        self.get_prob_from_rate = lambda rate: 1 - np.exp(-rate)
+        # TRANSITION PROBABILITIES
 
+        # Elmatad et al. describes these processes in terms of rates.
+        # To get probability that any timestep a transition occurs from rates we use the formula
+        # prob = 1 - exp(-rate)
+
+        self.prob_swap = self.get_prob_from_rate(self.rate_swap)
         self.get_prob_activation = lambda neighbors: self.get_prob_from_rate(self.get_rate_activation(neighbors))
         self.get_prob_inactivation = lambda neighbors: self.get_prob_from_rate(self.get_rate_inactivation(neighbors))
 
-        print("Neighboring spins; Probability activation; Probability inactivation")
+        # DEBUGGING
+
+        logging.info("Neighboring spins; Probability activation; Probability inactivation")
         for neighbors in [np.array([1, 1]), np.array([1,0 ]), np.array([0, 1]), np.array([0, 0])]:
-            print(neighbors, self.get_prob_activation(neighbors), self.get_prob_inactivation(neighbors))
+            logging.info(neighbors, self.get_prob_activation(neighbors), self.get_prob_inactivation(neighbors))
 
-        self.critical_biasing_field = self.get_critical_biasing_field()
+        logging.info("Probability swap: {}".format(self.prob_swap))
 
-        print("Critical biasing field: {}".format(self.critical_biasing_field))
-
-        if biasing_field is None:
-            biasing_field = self.critical_biasing_field
-
-        self.biasing_field = self.critical_biasing_field
-
-        if rate_swap:
-            self.rate_swap = rate_swap
-        else:
-            self.rate_swap = self.get_rate_swap(biasing_field)
-
-        self.biasing_field = biasing_field
-
-        self.prob_swap = self.get_prob_from_rate(self.rate_swap)
-        print("Probability swap: {}".format(self.prob_swap))
+    @staticmethod
+    def get_prob_from_rate(rate):
+        return 1 - np.exp(-rate)
 
     def get_rate_swap(self, s):
-        return (1. - self.inactivation_ratio + np.sqrt((1. - self.inactivation_ratio) ** 2. + 4. * np.exp(-s) * self.inactivation_ratio)) / 2.
+        return (1. - self.gamma + np.sqrt((1. - self.gamma) ** 2. + 4. * np.exp(-s) * self.gamma)) / 2.
 
-    def get_critical_biasing_field(self):
+    def get_critical_s(self):
         D = self.get_rate_swap
-        lhs = lambda s: (1. - self.inactivation_ratio) / (1. + self.softening_param)
-        rhs = lambda s: np.sqrt((1. - self.inactivation_ratio - D(s) * (1 - np.exp(-s))) ** 2. +4. * np.exp(-2. * s) * self.inactivation_ratio) - (1. - np.exp(-s) * D(s))
+        lhs = lambda s: (1. - self.gamma) / (1. + self.eps)
+        rhs = lambda s: np.sqrt((1. - self.gamma - D(s) * (1 - np.exp(-s))) ** 2. +4. * np.exp(-2. * s) * self.gamma) - (1. - np.exp(-s) * D(s))
 
         sol = optimize.root_scalar(lambda s: rhs(s) - lhs(s), x0=0, x1=.1)
 
@@ -439,8 +443,7 @@ def draw_trajectory(trajectory):
     from matplotlib.colors import ListedColormap
 
     cmap = ListedColormap(['w', 'r'])
-    fig = plt.figure(figsize=(10, 10))
-    plt.matshow(trajectory.T, cmap=cmap, fignum=fig.number)
+    plt.matshow(trajectory.T, cmap=cmap,)
     plt.ylabel("Site")
     plt.xlabel("Time step")
     plt.title("Trajectory")
