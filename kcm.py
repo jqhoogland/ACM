@@ -80,6 +80,14 @@ class KCM(object):
 
         return trajectory
 
+    def activity(self, trajectory):
+        activity = 0.
+        for i in range(self.num_steps - 1):
+            activity += np.sum(trajectory[i, :] != trajectory[i + 1, :])
+
+        return activity /(self.num_steps * self.num_sites)
+
+
 
 class EastKCM(KCM):
     """
@@ -129,9 +137,7 @@ class SoftenedFA(KCM):
 
     The one-spin softened Fredrickson-Andersen Model is a kinetic 1-dimensional Ising chain.
      - It's spins are non-interacting.
-     - Spin ``i`` can flip with probability ``prob_transition`` iff spin ``i+1``
-       (to the right or left, i.e. "east") is "up"
-     - Boundaries are closed.
+     - Boundaries are periodic.
 
     For convenience sake, we interpret the spins as occupation numbers $$0, 1$$
     rather than the conventional up/down $$\pm 1$$.
@@ -143,18 +149,21 @@ class SoftenedFA(KCM):
     gamma is how much faster a mobile site deactivates (in a mobile region) than an immobile site activates (in the same region)
     epsilon is the softening parameter: it determines to what extent sites that are in an immobile region can still activate/deactivate
 
+    # Rates
     The rate for flipping a spin 0 -> 1 is ``= C_i``
     The rate for flipping a spin 1 -> 0 is ``= gamma * C_i``
     The rate of swapping (0, 1) -> (1,0) is ``= rate_swap``
 
-    C_i = \sum_{j \in nn(i)} [n_j+ (\epsilon/2)]
+    where ``C_i = \sum_{j \in nn(i)} [n_j+ (\epsilon/2)]``
+
+    This entire class is built off of the description of Elmatad et al. 2010, first column of the second page.
 
     """
 
     def __init__(self, s=None, eps=0., gamma=1., num_sites=50, num_steps=100, num_burnin_steps=0):
         """
         :param float s: The biasing field that determines the rate of swaps. Defaults to the critical biasing field value.
-        :param float eps: The amount of softening to which even immobile regions are allowed to become mobile
+        :param float eps: The amount of softening; this allows immobile regions a small probability of becoming mobile
         :param float gamma: The relative rate of inactivation vs activation in the mobile region.
         :Param int num_sites: The number of sites to include in the chain.
         :param int num_steps: The number of steps to include in a trajectory.
@@ -162,22 +171,23 @@ class SoftenedFA(KCM):
             randomly initialized configuration.
 
         """
-        super(SoftenedFA, self).__init__(0., num_sites, num_steps, num_burnin_steps)
+        super(SoftenedFA, self).__init__(0., num_sites=num_sites, num_steps=num_steps, num_burnin_steps=num_burnin_steps)
 
         # MODEL PARAMETERS
+        self.eps = eps # This captures "activation energy" (U) and "temperature" (T) ~ exp(-U/T)
+        self.gamma = gamma # This captures "coupling energy" (J) and "temperature" (J) ~ exp(-J/T)
 
         if s is None:
             s = self.get_critical_s()
 
         self.s = s
 
-        self.eps = eps
-        self.gamma = gamma
-
         # TRANSITION RATES
 
-        self.rate_swap = self.get_rate_swap(s)
-        self.get_neighbor_constraint = lambda neighbors: (np.sum(neighbors) + np.size(neighbors) * self.eps / 2)
+        # As in Elmatad et al., we have chosen to set lambda, the overall rate of the fast processes to be equal to 1.
+
+        self.rate_swap = self.get_rate_swap_from_s(s)
+        self.get_neighbor_constraint = lambda neighbors: (np.sum(neighbors) + np.size(neighbors) * self.eps / 2) # C_i in Elmatad et al.
         self.get_rate_activation = lambda neighbors:  self.get_neighbor_constraint(neighbors)
         self.get_rate_inactivation = lambda neighbors:  (self.gamma * self.get_neighbor_constraint(neighbors))
 
@@ -185,84 +195,239 @@ class SoftenedFA(KCM):
 
         # Elmatad et al. describes these processes in terms of rates.
         # To get probability that any timestep a transition occurs from rates we use the formula
-        # prob = 1 - exp(-rate)
-
-        self.prob_swap = self.get_prob_from_rate(self.rate_swap)
-        self.get_prob_activation = lambda neighbors: self.get_prob_from_rate(self.get_rate_activation(neighbors))
-        self.get_prob_inactivation = lambda neighbors: self.get_prob_from_rate(self.get_rate_inactivation(neighbors))
 
         # DEBUGGING
 
-        logging.info("Neighboring spins; Probability activation; Probability inactivation")
+        # Just to make sure that the determined rates have the right order of magnitude
+
+        logging.info("Neighboring spins; Rate activation; Rate inactivation")
         for neighbors in [np.array([1, 1]), np.array([1,0 ]), np.array([0, 1]), np.array([0, 0])]:
-            logging.info(neighbors, self.get_prob_activation(neighbors), self.get_prob_inactivation(neighbors))
+            logging.info("Neighbors {}".format(neighbors))
+            logging.info("Rate Activation {}".format(self.get_rate_activation(neighbors)))
+            logging.info("Rate Deactivation {}".format(self.get_rate_inactivation(neighbors)))
 
-        logging.info("Probability swap: {}".format(self.prob_swap))
+        logging.info("Biasing field: {}".format(self.s))
+        logging.info("Rate swap: {}".format(self.rate_swap))
 
-    @staticmethod
-    def get_prob_from_rate(rate):
-        return 1 - np.exp(-rate)
-
-    def get_rate_swap(self, s):
-        return (1. - self.gamma + np.sqrt((1. - self.gamma) ** 2. + 4. * np.exp(-s) * self.gamma)) / 2.
+    def get_rate_swap_from_s(self, s):
+        # Formula 4 in Elmatad et al.
+        return (1. - self.gamma + np.sqrt(np.square(1. - self.gamma) + 4. * np.exp(-s) * self.gamma)) / 2.
 
     def get_critical_s(self):
-        D = self.get_rate_swap
-        lhs = lambda s: (1. - self.gamma) / (1. + self.eps)
-        rhs = lambda s: np.sqrt((1. - self.gamma - D(s) * (1 - np.exp(-s))) ** 2. +4. * np.exp(-2. * s) * self.gamma) - (1. - np.exp(-s) * D(s))
+        # Shorthand for convenience:
+        D = self.get_rate_swap_from_s
 
+        # Formula 5 in Elmatad et al.:
+        lhs = lambda s: (1. - self.gamma) / (1. + self.eps)
+        rhs = lambda s: np.sqrt((1. - self.gamma - D(s) * np.square(1 - np.exp(-s))) +4. * np.exp(-2. * s) * self.gamma) - (1. - np.exp(-s) * D(s))
+
+        # We use a root-solver to find values of s such that this equality holds
+        # Since the right-hand-side minus the left-hand-side should equal 0,
+        # where we compute D as a function of s.
         sol = optimize.root_scalar(lambda s: rhs(s) - lhs(s), x0=0, x1=.1)
 
+        # TODO: In Elmatad et al., the derived values are in the order of 0.0001-0.01
+        # However, this method seems to produce values around .3-.5
         return sol.root
 
     @staticmethod
     def _get_neighbors(index, state):
         neighbors = []
 
+        # NOTE: We are usingperiodic boundary conditions
         if index == 0:
-            neighbors = [state[index + 1]]
+            neighbors = [state[index + 1], state[len(state) - 1]]
         elif index == len(state) - 1:
-            neighbors = [state[index - 1]]
+            neighbors = [state[index - 1], state[0]]
         else:
             neighbors = [state[index - 1], state[index + 1]]
 
         return np.array(neighbors)
 
+    @staticmethod
+    def _flip(state, i):
+        """
+        Maps 0 -> 1 or 1 -> 0 at index ``i`` in ``state``
+        """
+        state[i] = 1 - state[i]
+        return state
+
+    def _swap(self, state, i):
+        """
+        Flips spins ``i`` and ``i+1``.
+
+        Since we are using periodic boundary conditions,
+        if ``i`` is the last index in state, ``i+1`` is the first index.
+        """
+        state[i], state[(i + 1) % self.num_sites] = state[(i + 1) % self.num_sites], state[i]
+        return state
+
     def _step(self, state):
-        """
-        Carries out one step on ``state``.
-        Iterate over all indices and probabilistically update (with probability
-        ``self.prob_transition`` times the number of neighboring up spins)
-        those spins whose neighbors have value 0
 
         """
+        The probability of switching to a particular state C' is
 
-        tmp_state = state.copy()
+        P(C -> C') = W(C -> C') / r(C),
+        where W(C -> C') is the rate of switching to that state C', and
+        where r(C) = sum_{C'} W(C -> C') is the sum of all transition rates
 
-        # First, we flip all relevant parts
+        The set of possible C' given C are all sites within one flip or swap of C.
+
+        See (pg 2. top-left): https://www.researchgate.net/publication/7668956_Chaotic_Properties_of_Systems_with_Markov_Dynamics
+        """
+
+        # STEP 1. DETERMINE WEIGHTS W(C -> C')
+
+        # We determine the weight W(C -> C') for either swapping or flipping at each site.
+        # (if a swap is not allowed, e.g. a pair [0, 0] or [1, 1], then it gets weight 0)
+        swap_weights = np.zeros(self.num_sites)
+        flip_weights = np.zeros(self.num_sites)
+
         for i in range(self.num_sites):
             neighbors = self._get_neighbors(i, state)
 
-            # Slow state
-            if state[i] == 0 and  np.random.uniform() < self.get_prob_activation(neighbors):
-                tmp_state[i] = 1
+            if state[i] == 0: # The state is inactive
+                flip_weights[i] = self.get_rate_activation(neighbors)
 
-            # Fast state inactivation
-            elif state[i] == 1 and np.random.uniform() < self.get_prob_inactivation(neighbors):
-                tmp_state[i] = 0
+                # There is also the possibility of swapping [0, 1] -> [1, 0]
+                if state[(i + 1) % self.num_sites] == 1:
+                    swap_weights[i] = self.rate_swap
 
-        # Swap afterwards according to the values of the previous condition
+            else: # The state is active
+                flip_weights[i] = self.get_rate_inactivation(neighbors)
+
+                # There is also the possibility of swapping [1, 0] -> [0, 1]
+                # In Elmatad et al., they only discuss [0, 1] -> [0, 1], but
+                # we implicitly need the inverse in order to satisfy detailed balance
+                if state[(i + 1) % self.num_sites] == 0:
+                    swap_weights[i] = self.rate_swap
+
+        total_weight = np.sum(swap_weights) + np.sum(flip_weights)
+
+        # STEP 2. DETERMINE WHETHER TO UPDATE C
+        # The characteristic time of C -> C' is equal to r(C), the sum over all W(C -> C')
+        # We update with a probability 1 - exp(-r(C))
+
+        time_step = 0.001
+        if np.random.uniform() < np.exp(-total_weight * time_step):
+             return state
+
+        # STEP 3. CHOOSE A C'
+        # We randomly choose a C' by its normalized weight (probability).
+
+        swap_probs = swap_weights / total_weight
+        flip_probs = flip_weights / total_weight
+
+        choice = np.random.uniform()
+        prob = flip_probs[0]
+
+        logging.debug("Choice: {}".format(choice))
+        logging.debug("Flips: {}".format(flip_probs))
+        logging.debug("Swaps: {}".format(swap_probs))
+
+        # We choose to flip first index i so that the cumulative probability of flips for
+        # all sites up to and including index i exceeds the randomly generated number.
+        # If the cumulative probabilities don't reach this point, we go on to considering swaps.
+        # We choose to flip the first index j so that the cumulative probability of swaps
+        # on all sites up to and including index j PLUS the probability of all flips exceeds the randomly generated number
+
         i = 0
+        while prob < choice and i < self.num_sites - 1:
+            i += 1
+            prob += flip_probs[i]
 
-        while i < self.num_sites - 1:
-            if state[i] == 0 and state[i + 1] == 1 and np.random.uniform() < self.prob_swap:
-                # I actually think it might not matter whether you flip based on state or tmp_state
-                tmp_state[i], tmp_state[i + 1] == tmp_state[i + 1], tmp_state[i]
-                i += 2 # Same here.
-            else:
-                i += 1
+        if choice < prob:
+            state = self._flip(state, i)
+        else:
+            j = 0
+            prob += swap_probs[0]
+            while prob < choice and j < self.num_sites - 1:
+                j += 1
+                prob += swap_probs[j]
 
-        return tmp_state
+            state = self._swap(state, j)
+
+        return state
+
+    def activity(self, trajectory):
+        activity = 0.
+        for i in range(self.num_steps - 1):
+            if not np.isclose(trajectory[i, :], trajectory[i + 1, :]).all():
+                activity += 1.
+
+        # NOTE: Elmatad et al. mention dividing by N t_obs, but that doesn't really make sense
+        # when there is only one local change in successive configurations
+        return activity / (self.num_steps) # This is the intensive activity
+
+class TransitionPathSampler(object):
+    """
+
+    Described in Supporting Information of Elmatad et al. 2010
+
+    """
+    def __init__(self, kcm, observable):
+        """
+        Takes a kcm model, and can measure the observable over ensembles of trajectories taken from the kcm
+        """
+
+        self.kcm = kcm
+        self.num_steps = kcm.num_steps
+        self.observable = observable
+
+    def _half_shoot(self, trajectory):
+        i = np.random.choice(np.arange(self.kcm.num_sites, dtype=np.int32))
+
+        for j in range(i, self.kcm.num_steps -1):
+            trajectory[j + 1, :] = self.kcm._step(trajectory[j, :])
+
+        return trajectory
+
+    def _shift(self, trajectory):
+        i = np.random.choice(np.arange(self.kcm.num_sites, dtype=np.int32))
+
+        trajectory[:self.kcm.num_steps - i, :] = trajectory[i:, :]
+
+        for j in range(self.kcm.num_steps - i, self.kcm.num_steps -1):
+            trajectory[j + 1, :] = self.kcm._step(trajectory[j, :])
+
+        return trajectory
+
+    def _step(self, trajectory):
+        if np.random.uniform() < 0.5:
+            return self._half_shoot(trajectory)
+        else:
+            return self._shift(trajectory)
+
+    def get_trajectory_weight(self, trajectory, g):
+        return self.kcm.s * self.kcm.activity(trajectory) - g * (np.sum(trajectory[0, :] + trajectory[-1, :]))
+
+    def mc_average(self, num_samples, num_burnin_in_steps=0, verbose=False):
+        measurements = np.zeros(num_samples)
+
+        trajectory = self.kcm.gen_trajectory()
+
+        alpha = np.arctan(2. * np.exp(-self.kcm.s) * (1. + self.kcm.eps) / (2. +self.kcm.eps - self.kcm.eps * self.kcm.gamma))
+        g = np.log(np.tan(alpha / 2))
+
+        energy_prev = self.get_trajectory_weight(trajectory, g)
+        energy_curr = energy_prev
+
+        for i in range(num_samples):
+            measurements[i] = self.observable(trajectory)
+
+            if verbose:
+                draw_trajectory(trajectory)
+
+            trial_trajectory = self._step(trajectory)
+
+            energy_prev = energy_curr
+            energy_curr = self.get_trajectory_weight(trial_trajectory, g)
+
+            if np.random.uniform() < min(1, np.exp(energy_prev - energy_curr)):
+                trajectory = trial_trajectory
+
+        return np.mean(measurements)
+
 
 class OneSpinFAKCM(KCM):
     """
@@ -435,6 +600,7 @@ class OneSpinFAKCM(KCM):
         return int(state[i] == state[j])
 
 
+
 def draw_trajectory(trajectory):
     """
     :param (np.array) trajectory: A trajectory of shape
@@ -442,7 +608,7 @@ def draw_trajectory(trajectory):
     """
     from matplotlib.colors import ListedColormap
 
-    cmap = ListedColormap(['w', 'r'])
+    cmap = ListedColormap(['r', 'w'])
     plt.matshow(trajectory.T, cmap=cmap,)
     plt.ylabel("Site")
     plt.xlabel("Time step")
