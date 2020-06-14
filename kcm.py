@@ -300,6 +300,7 @@ class SoftenedFA(KCM):
         total_weight = swap_weight + flip_weight
 
         # Step 2: Decide whether or not to update the state
+        # NOTE: This is the step I am most uncertain about!!
         if (np.random.uniform() > np.exp(-total_weight)):
             return state
 
@@ -315,10 +316,6 @@ class SoftenedFA(KCM):
             state[i], state[(i + 1) % self.num_sites] = state[(i + 1) % self.num_sites], state[i]
 
         return state
-
-
-def step2(self, state):
-
 
     def activity(self, trajectory):
         activity = 0.
@@ -364,19 +361,25 @@ class TransitionPathSampler(object):
         return trajectory
 
     def _step(self, trajectory):
+        # With equal probability we either half-shoot or shift.
         if np.random.uniform() < 0.5:
             return self._half_shoot(trajectory)
         else:
             return self._shift(trajectory)
 
     def get_trajectory_weight(self, trial_trajectory):
+        # See ``accept_trajectory``
+        # By default, we except all newly generated trajectories.
         return 1.
 
     @staticmethod
     def accept_trajectory(energy_prev, energy_curr):
+        # By default, we except all newly generated trajectories.
         return True
 
-    def mc_average(self, num_samples, num_burnin_in_steps=0, verbose=False):
+    def mc_samples(self, num_samples, num_burnin_in_steps=0, verbose=False):
+        # TODO: also measure the standard deviations (or do a fancier binning analysis)!
+
         measurements = np.zeros(num_samples)
 
         trajectory = self.kcm.gen_trajectory()
@@ -398,7 +401,10 @@ class TransitionPathSampler(object):
             if self.accept_trajectory(energy_prev, energy_curr):
                 trajectory = trial_trajectory
 
-        return np.mean(measurements)
+        return measurements
+
+    def mc_average(self, num_samples, num_burnin_in_steps=0, verbose=False):
+        return np.mean(self.mc_samples(num_samples, num_burnin_in_steps, verbose))
 
 class SoftenedFATPS(TransitionPathSampler):
     def __init__(self, *args):
