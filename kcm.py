@@ -275,79 +275,50 @@ class SoftenedFA(KCM):
 
         See (pg 2. top-left): https://www.researchgate.net/publication/7668956_Chaotic_Properties_of_Systems_with_Markov_Dynamics
         """
+        i = np.random.choice(np.arange(self.num_sites, dtype=np.int32))
+        neighbors = self._get_neighbors(i, state)
 
-        # STEP 1. DETERMINE WEIGHTS W(C -> C')
+        swap_weight = 0
+        flip_weight = 0
 
-        # We determine the weight W(C -> C') for either swapping or flipping at each site.
-        # (if a swap is not allowed, e.g. a pair [0, 0] or [1, 1], then it gets weight 0)
-        swap_weights = np.zeros(self.num_sites)
-        flip_weights = np.zeros(self.num_sites)
+        if state[i] == 0:
+            # For an immobile state we are interested in the possibilitie of activation.
 
-        for i in range(self.num_sites):
-            neighbors = self._get_neighbors(i, state)
+            flip_weight = self.get_rate_activation(neighbors)
 
-            if state[i] == 0: # The state is inactive
-                flip_weights[i] = self.get_rate_activation(neighbors)
+            # There is also the possibility of swapping [0, 1] -> [1, 0]
+            if  state[(i + 1) % self.num_sites] == 1:
+                swap_weight = self.rate_swap
 
-                # There is also the possibility of swapping [0, 1] -> [1, 0]
-                if state[(i + 1) % self.num_sites] == 1:
-                    swap_weights[i] = self.rate_swap
+        else:
+            flip_weight = self.get_rate_inactivation(neighbors)
 
-            else: # The state is active
-                flip_weights[i] = self.get_rate_inactivation(neighbors)
+            # There is also the possibility of swapping [1, 0] -> [0, 1]
+            if state[(i + 1) % self.num_sites] == 0:
+                swap_weight = self.rate_swap
 
-                # There is also the possibility of swapping [1, 0] -> [0, 1]
-                # In Elmatad et al., they only discuss [0, 1] -> [0, 1], but
-                # we implicitly need the inverse in order to satisfy detailed balance
-                if state[(i + 1) % self.num_sites] == 0:
-                    swap_weights[i] = self.rate_swap
+        total_weight = swap_weight + flip_weight
 
-        total_weight = np.sum(swap_weights) + np.sum(flip_weights)
+        # Step 2: Decide whether or not to update the state
+        if (np.random.uniform() > np.exp(-total_weight)):
+            return state
 
-        # STEP 2. DETERMINE WHETHER TO UPDATE C
-        # The characteristic time of C -> C' is equal to r(C), the sum over all W(C -> C')
-        # We update with a probability 1 - exp(-r(C))
-
-        time_step = 0.001
-        if np.random.uniform() < np.exp(-total_weight * time_step):
-             return state
-
-        # STEP 3. CHOOSE A C'
-        # We randomly choose a C' by its normalized weight (probability).
-
-        swap_probs = swap_weights / total_weight
-        flip_probs = flip_weights / total_weight
+        # Step 3: If we update, decide whether to flip or swap
+        flip_prob = flip_weight / total_weight
+        swap_prob = swap_weight / total_weight
 
         choice = np.random.uniform()
-        prob = flip_probs[0]
 
-        logging.debug("Choice: {}".format(choice))
-        logging.debug("Flips: {}".format(flip_probs))
-        logging.debug("Swaps: {}".format(swap_probs))
-
-        # We choose to flip first index i so that the cumulative probability of flips for
-        # all sites up to and including index i exceeds the randomly generated number.
-        # If the cumulative probabilities don't reach this point, we go on to considering swaps.
-        # We choose to flip the first index j so that the cumulative probability of swaps
-        # on all sites up to and including index j PLUS the probability of all flips exceeds the randomly generated number
-
-        i = 0
-        while prob < choice and i < self.num_sites - 1:
-            i += 1
-            prob += flip_probs[i]
-
-        if choice < prob:
-            state = self._flip(state, i)
+        if choice < flip_prob:
+            state[i] = 1 - state[i]
         else:
-            j = 0
-            prob += swap_probs[0]
-            while prob < choice and j < self.num_sites - 1:
-                j += 1
-                prob += swap_probs[j]
-
-            state = self._swap(state, j)
+            state[i], state[(i + 1) % self.num_sites] = state[(i + 1) % self.num_sites], state[i]
 
         return state
+
+
+def step2(self, state):
+
 
     def activity(self, trajectory):
         activity = 0.
@@ -398,18 +369,19 @@ class TransitionPathSampler(object):
         else:
             return self._shift(trajectory)
 
-    def get_trajectory_weight(self, trajectory, g):
-        return self.kcm.s * self.kcm.activity(trajectory) - g * (np.sum(trajectory[0, :] + trajectory[-1, :]))
+    def get_trajectory_weight(self, trial_trajectory):
+        return 1.
+
+    @staticmethod
+    def accept_trajectory(energy_prev, energy_curr):
+        return True
 
     def mc_average(self, num_samples, num_burnin_in_steps=0, verbose=False):
         measurements = np.zeros(num_samples)
 
         trajectory = self.kcm.gen_trajectory()
 
-        alpha = np.arctan(2. * np.exp(-self.kcm.s) * (1. + self.kcm.eps) / (2. +self.kcm.eps - self.kcm.eps * self.kcm.gamma))
-        g = np.log(np.tan(alpha / 2))
-
-        energy_prev = self.get_trajectory_weight(trajectory, g)
+        energy_prev = self.get_trajectory_weight(trajectory)
         energy_curr = energy_prev
 
         for i in range(num_samples):
@@ -421,12 +393,30 @@ class TransitionPathSampler(object):
             trial_trajectory = self._step(trajectory)
 
             energy_prev = energy_curr
-            energy_curr = self.get_trajectory_weight(trial_trajectory, g)
+            energy_curr = self.get_trajectory_weight(trial_trajectory)
 
-            if np.random.uniform() < min(1, np.exp(energy_prev - energy_curr)):
+            if self.accept_trajectory(energy_prev, energy_curr):
                 trajectory = trial_trajectory
 
         return np.mean(measurements)
+
+class SoftenedFATPS(TransitionPathSampler):
+    def __init__(self, *args):
+        """
+        docstring
+        """
+        super(SoftenedFATPS, self).__init__(*args)
+        self.alpha = np.arctan(2. * np.exp(-self.kcm.s) * (1. + self.kcm.eps) / (2. +self.kcm.eps - self.kcm.eps * self.kcm.gamma))
+        self.g = np.log(np.tan(self.alpha / 2))
+
+
+    def get_trajectory_weight(self, trajectory):
+        return self.kcm.s * self.kcm.activity(trajectory) - self.g * (np.sum(trajectory[0, :] + trajectory[-1, :]))
+
+    @staticmethod
+    def accept_trajectory(energy_prev, energy_curr):
+        return np.random.uniform() < min(1, np.exp(energy_prev - energy_curr))
+
 
 
 class OneSpinFAKCM(KCM):
@@ -475,7 +465,7 @@ class OneSpinFAKCM(KCM):
 
         tmp_state = state.copy()
 
-        for index in range(self.num_sites):
+        for index in shuffled_indices:
 
             # check if the neighbor contraint is upheld
             if not self._check_neighbor_constraint(state, index):
@@ -493,7 +483,7 @@ class OneSpinFAKCM(KCM):
 
             # attempt a swap
             if np.random.uniform() > self.prob_swap and index < len(state) - 1:
-                direction = 1
+                direction = np.random.choice([-1, 1])
 
                 # calculate the change in energy of the system after a swap
                 dE = self._energy_change_of_swap(state, index, direction)
