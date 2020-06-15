@@ -241,9 +241,9 @@ class SoftenedFA(ContinuousTimeKCM):
 
         i.e. x = - (1 / r) * log ( f(x; r) / r )
         """
-        times = np.abs((1. / rates) * np.log(np.random.uniform(size=rates.size) / rates))
 
-        times[times == np.inf] = 1e8
+        times = -(1. / rates) * np.log(np.random.uniform(size=rates.size) / rates)
+        times[times <= 0] = np.inf
 
         return times
 
@@ -269,7 +269,6 @@ class SoftenedFA(ContinuousTimeKCM):
 
         swap_times = self.get_transition_times(swap_rates)
         flip_times = self.get_transition_times(flip_rates)
-
 
         min_swap_time_idx = np.argmin(swap_times)
         min_flip_time_idx = np.argmin(flip_times)
@@ -339,7 +338,7 @@ class TransitionPathSampler(object):
         # By default, we except all newly generated trajectories.
         return True
 
-    def mc_samples(self, num_samples, num_burnin_in_steps=0, verbose=False):
+    def mc_samples(self, num_samples, num_burnin_steps=0, verbose=False):
         # TODO: also measure the standard deviations (or do a fancier binning analysis)!
 
         measurements = np.zeros(num_samples)
@@ -365,8 +364,8 @@ class TransitionPathSampler(object):
 
         return measurements
 
-    def mc_average(self, num_samples, num_burnin_in_steps=0, verbose=False):
-        return np.mean(self.mc_samples(num_samples, num_burnin_in_steps, verbose))
+    def mc_average(self, num_samples, num_burnin_steps=0, verbose=False):
+        return np.mean(self.mc_samples(num_samples, num_burnin_steps, verbose))
 
 class SoftenedFATPS(TransitionPathSampler):
     def __init__(self, *args):
@@ -378,8 +377,8 @@ class SoftenedFATPS(TransitionPathSampler):
         self.g = np.log(np.tan(self.alpha / 2))
 
 
-    def get_trajectory_weight(self, trajectory):
-        return self.kcm.s * self.kcm.activity(trajectory) - self.g * (np.sum(trajectory[0, :] + trajectory[-1, :]))
+    def get_trajectory_weight(self, trajectory, occupation_times):
+        return self.kcm.s * self.kcm.activity(trajectory, occupation_times) - self.g * (np.sum(trajectory[0, :] + trajectory[-1, :]))
 
     @staticmethod
     def accept_trajectory(energy_prev, energy_curr):
