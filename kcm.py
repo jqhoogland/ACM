@@ -398,8 +398,6 @@ class OneSpinFAKCM(KCM):
         """
         return int(state[i] == state[j])
 
-
-
 def draw_trajectory(trajectory):
     """
     :param (np.array) trajectory: A trajectory of shape

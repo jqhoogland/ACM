@@ -58,7 +58,7 @@ class ContinuousTimeKCM(object):
         if init_state is None:
             state = np.random.choice([0, 1], size=(self.num_sites, ))
 
-        assert state.shape == (self.num_sites)
+        assert state.shape == (self.num_sites, )
 
         for _i in range(self.num_burnin_steps - 1): # -1 because we update state once more in the forloop below.
             state, _t = self._step(state)
@@ -227,7 +227,7 @@ class SoftenedFA(ContinuousTimeKCM):
                 if state[(i + 1) % self.num_sites] == 0:
                     swap_rates[i] = self.rate_swap
 
-            return swap_rates, flip_rates
+        return swap_rates, flip_rates
 
     def get_transition_times(self, rates):
         """
@@ -241,8 +241,11 @@ class SoftenedFA(ContinuousTimeKCM):
 
         i.e. x = - (1 / r) * log ( f(x; r) / r )
         """
+        times = np.abs((1. / rates) * np.log(np.random.uniform(size=rates.size) / rates))
 
-        return -(1. / rates) * np.log(np.random.uniform(size=rates.size) / rates)
+        times[times == np.inf] = 1e8
+
+        return times
 
     def _step(self, state):
         """
@@ -265,11 +268,11 @@ class SoftenedFA(ContinuousTimeKCM):
         # STEP 2. DETERMINE CLOCK TIMERS
 
         swap_times = self.get_transition_times(swap_rates)
-        flip_rates = self.get_transition_times(flip_rates)
+        flip_times = self.get_transition_times(flip_rates)
 
 
         min_swap_time_idx = np.argmin(swap_times)
-        min_flip_time_idx = np.argmin(flip_time)
+        min_flip_time_idx = np.argmin(flip_times)
 
         min_swap_time = swap_times[min_swap_time_idx]
         min_flip_time = flip_times[min_flip_time_idx]
@@ -277,10 +280,10 @@ class SoftenedFA(ContinuousTimeKCM):
         time = 0
 
         if min_swap_time < min_flip_time:
-            state = self._swap(state, i)
+            state = self._swap(state, min_swap_time_idx)
             time = min_swap_time
         else:
-            state = self._flip(state, i)
+            state = self._flip(state, min_flip_time_idx)
             time = min_flip_time
 
         return state, time
@@ -381,3 +384,38 @@ class SoftenedFATPS(TransitionPathSampler):
     @staticmethod
     def accept_trajectory(energy_prev, energy_curr):
         return np.random.uniform() < min(1, np.exp(energy_prev - energy_curr))
+
+def discretize_trajectory(trajectory, occupation_times, time_step=0.01):
+    trajectory_duration = np.sum(occupation_times)
+    num_transitions, num_sites = trajectory.shape
+    num_discrete_steps = int(trajectory_duration / time_step)
+    discrete_trajectory = np.zeros([num_discrete_steps, num_sites])
+
+    j = 0 # index which goes over the number of discretized steps
+    for i in range(num_transitions): # index which goes over the number of original steps
+        time_in_state = occupation_times[i]
+        num_discrete_steps_in_state = int(time_in_state / time_step)
+        if num_discrete_steps_in_state > 0:
+            discrete_trajectory[j: j + num_discrete_steps_in_state, :] = trajectory[i, :]
+
+        j += num_discrete_steps_in_state
+
+    return discrete_trajectory
+
+
+def draw_trajectory(trajectory, occupation_times, time_step=0.01):
+    """
+    :param (np.array) trajectory: A trajectory of shape
+        (self.num_steps, self.num_sites). The rows are states.
+    """
+    from matplotlib.colors import ListedColormap
+
+    discrete_trajectory = discretize_trajectory(trajectory, occupation_times, time_step)
+
+    cmap = ListedColormap(['r', 'w'])
+    plt.matshow(discrete_trajectory.T, cmap=cmap,)
+    plt.ylabel("Site")
+    plt.xlabel("Time step")
+    plt.title("Trajectory")
+
+    plt.show()
