@@ -145,3 +145,4 @@ dmypy.json
 # Extra by Guido
 .idea/
 .vscode/
+results/

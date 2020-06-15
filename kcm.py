@@ -10,6 +10,7 @@
 # ------------------------------------------------------------
 
 import logging
+from tqdm import tqdm
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -125,9 +126,14 @@ class EastKCM(KCM):
 
         """
 
+        dummie = state[0]
+
         for i in range(self.num_sites - 1):
             if state[i + 1] == 1 and np.random.uniform() < self.prob_transition:
                 state[i] = 1 - state[i]
+        
+        if dummie == 1 and np.random.uniform() < self.prob_transition:
+            state[-1] = 1 - state[-1]
 
         return state
 
@@ -188,8 +194,8 @@ class SoftenedFA(KCM):
 
         self.rate_swap = self.get_rate_swap_from_s(s)
         self.get_neighbor_constraint = lambda neighbors: (np.sum(neighbors) + np.size(neighbors) * self.eps / 2) # C_i in Elmatad et al.
-        self.get_rate_activation = lambda neighbors:  self.get_neighbor_constraint(neighbors)
-        self.get_rate_inactivation = lambda neighbors:  (self.gamma * self.get_neighbor_constraint(neighbors))
+        self.get_rate_activation = lambda neighbors:  (self.gamma * self.get_neighbor_constraint(neighbors))
+        self.get_rate_inactivation = lambda neighbors:  self.get_neighbor_constraint(neighbors)
 
         # TRANSITION PROBABILITIES
 
@@ -604,8 +610,9 @@ def draw_trajectory(trajectory):
     """
     from matplotlib.colors import ListedColormap
 
-    cmap = ListedColormap(['r', 'w'])
-    plt.matshow(trajectory.T, cmap=cmap,)
+    plt.figure(figsize=(7,5))
+    cmap = ListedColormap(['w', 'r'])
+    plt.matshow(trajectory.T, cmap=cmap, fignum=1, aspect='auto')
     plt.ylabel("Site")
     plt.xlabel("Time step")
     plt.title("Trajectory")
@@ -613,7 +620,65 @@ def draw_trajectory(trajectory):
     plt.show()
 
 
+def sfa_parameter_search(eps_, s_, draw=False):
+    """
+    Perform a grid search for the paramers `eps` and `s` and visualize the results.
+
+    :param list eps_: list of values for eps that will be considered
+    :param list s_: list of values for s that will be considered
+    :param bool draw: If True will draw the trajectories that have been generated. The trajectories are shown and not saved.
+    """
+
+    # check if input is correct
+    assert len(eps_) > 0
+    assert len(s_) > 0
+
+    activations = np.zeros((len(eps_), len(s_)))
+
+    for i, eps in enumerate(eps_):
+        for j, s in enumerate(s_):
+            print("Softening parameter, epsilon: {}; Biasing field, s: {}".format(eps, s))
+            fa_kcm = SoftenedFA(gamma=0.25, s=-s, eps=eps, num_burnin_steps=0, num_sites=60, num_steps=600)
+            trajectory = fa_kcm.gen_trajectory()
+            tps = TransitionPathSampler(fa_kcm, fa_kcm.activity)
+            tps.mc_average(100)
+            activations[i,j] = fa_kcm.activity(trajectory)
+
+            if draw:
+                print("Activity: {}".format(fa_kcm.activity(trajectory)))
+                draw_trajectory(trajectory)
+    
+    plt.figure()
+    for i in range(len(eps_)):
+        print(activations[i, :])
+        plt.scatter(x=s_, y=activations[i, :], label="eps = {}".format(eps_[i]))
+    plt.legend()
+    plt.ylim(0,1)
+    plt.xlabel("s")
+    plt.ylabel("k(s)")
+    plt.show()
+
+def east_parameter_search(probs):
+
+    assert len(probs) > 0
+
+    activations = []
+
+    for prob in tqdm(probs):
+        east_kcm = EastKCM(prob_transition=prob, num_burnin_steps=0, num_sites=60, num_steps=600)
+        trajectory = east_kcm.gen_trajectory()
+        tps = TransitionPathSampler(east_kcm, east_kcm.activity)
+        activations.append(tps.mc_average(100))
+
+    plt.figure()
+    for i in range(len(probs)):
+        plt.scatter(x=probs, y=activations)
+    plt.xlabel("transition probability")
+    plt.ylabel("average activation of 100 samples")
+    plt.show()
+
+
+
 if __name__ == "__main__":
-    fa_kcm = OneSpinFAKCM(0.5, 0.5, 25, 200, 0.1, 0.1, 1, 50000)
-    trajectory = fa_kcm.gen_trajectory()
-    draw_trajectory(trajectory)
+    steps = 50
+    east_parameter_search([0 + 2e-3/steps*i for i in range(steps)])
