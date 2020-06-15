@@ -129,7 +129,7 @@ class SoftenedFA(ContinuousTimeKCM):
         # As in Elmatad et al., we have chosen to set lambda, the overall rate of the fast processes to be equal to 1.
 
         self.rate_swap = self.get_rate_swap_from_s(s)
-        self.get_neighbor_constraint = lambda neighbors: (np.sum(neighbors) + np.size(neighbors) * self.eps / 2) # C_i in Elmatad et al.
+        self.get_neighbor_constraint = lambda neighbors: (np.sum(neighbors) + self.eps) # C_i in Elmatad et al.
         self.get_rate_activation = lambda neighbors: self.gamma * self.get_neighbor_constraint(neighbors)
         self.get_rate_inactivation = lambda neighbors:  self.get_neighbor_constraint(neighbors)
 
@@ -224,8 +224,8 @@ class SoftenedFA(ContinuousTimeKCM):
                 # There is also the possibility of swapping [1, 0] -> [0, 1]
                 # In Elmatad et al., they only discuss [0, 1] -> [0, 1], but
                 # we implicitly need the inverse in order to satisfy detailed balance
-                if state[(i + 1) % self.num_sites] == 0:
-                    swap_rates[i] = self.rate_swap
+                # if state[(i + 1) % self.num_sites] == 0:
+                #     swap_rates[i] = self.rate_swap
 
         return swap_rates, flip_rates
 
@@ -239,10 +239,16 @@ class SoftenedFA(ContinuousTimeKCM):
 
         is the pdf, and r is the rate.
 
-        i.e. x = - (1 / r) * log ( f(x; r) / r )
+        Then the cdf is
+
+        c(x; r) = 1 - exp(-rx)
+
+        with inverse
+
+        x = - np.log(1 - c(x; r)) / r
         """
 
-        times = -(1. / rates) * np.log(np.random.uniform(size=rates.size) / rates)
+        times = -np.log(1 - np.random.uniform(size=rates.size)) / rates
         times[times <= 0] = np.inf
 
         return times
@@ -374,7 +380,7 @@ class SoftenedFATPS(TransitionPathSampler):
         """
         super(SoftenedFATPS, self).__init__(*args)
         self.alpha = np.arctan(2. * np.exp(-self.kcm.s) * (1. + self.kcm.eps) / (2. +self.kcm.eps - self.kcm.eps * self.kcm.gamma))
-        self.g = np.log(np.tan(self.alpha / 2))
+        self.g = np.log(np.tan(self.alpha / 2.))
 
 
     def get_trajectory_weight(self, trajectory, occupation_times):
