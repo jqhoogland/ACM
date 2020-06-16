@@ -129,211 +129,13 @@ class EastKCM(KCM):
         left_most_site = state[0]
 
         for i in range(self.num_sites - 1):
-            if state[i + 1] == 1:
-                if (state[i] == 1 and np.random.uniform() < .5 + self.prob_transition) or (state[i] == 0 and np.random.uniform() < .5 - self.prob_transition):
-                    state[i] = 1 - state[i]
-        
-        if left_most_site == 1:
-            if (state[-1] == 1 and np.random.uniform() < .5 + self.prob_transition) or (state[-1] == 0 and np.random.uniform() < .5 - self.prob_transition):
-                state[-1] = 1 - state[-1]
+            if state[i + 1] == 1 and np.random.uniform() < self.prob_transition:
+                state[i] = 1 - state[i]
+
+        if dummie == 1 and np.random.uniform() < self.prob_transition:
+            state[-1] = 1 - state[-1]
 
         return state
-
-class SoftenedFA(KCM):
-
-    """
-
-    The one-spin softened Fredrickson-Andersen Model is a kinetic 1-dimensional Ising chain.
-     - It's spins are non-interacting.
-     - Boundaries are periodic.
-
-    For convenience sake, we interpret the spins as occupation numbers $$0, 1$$
-    rather than the conventional up/down $$\pm 1$$.
-
-    This class produces a single trajectory.
-
-    # Params
-    s is the biasing_field
-    gamma is how much faster a mobile site deactivates (in a mobile region) than an immobile site activates (in the same region)
-    epsilon is the softening parameter: it determines to what extent sites that are in an immobile region can still activate/deactivate
-
-    # Rates
-    The rate for flipping a spin 0 -> 1 is ``= C_i``
-    The rate for flipping a spin 1 -> 0 is ``= gamma * C_i``
-    The rate of swapping (0, 1) -> (1,0) is ``= rate_swap``
-
-    where ``C_i = \sum_{j \in nn(i)} [n_j+ (\epsilon/2)]``
-
-    This entire class is built off of the description of Elmatad et al. 2010, first column of the second page.
-
-    """
-
-    def __init__(self, s=None, eps=0., gamma=1., num_sites=50, num_steps=100, num_burnin_steps=0):
-        """
-        :param float s: The biasing field that determines the rate of swaps. Defaults to the critical biasing field value.
-        :param float eps: The amount of softening; this allows immobile regions a small probability of becoming mobile
-        :param float gamma: The relative rate of inactivation vs activation in the mobile region.
-        :Param int num_sites: The number of sites to include in the chain.
-        :param int num_steps: The number of steps to include in a trajectory.
-        :param int num_burnin_steps: The number of steps to equilibrate a
-            randomly initialized configuration.
-
-        """
-        super(SoftenedFA, self).__init__(0., num_sites=num_sites, num_steps=num_steps, num_burnin_steps=num_burnin_steps)
-
-        # MODEL PARAMETERS
-        self.eps = eps # This captures "activation energy" (U) and "temperature" (T) ~ exp(-U/T)
-        self.gamma = gamma # This captures "coupling energy" (J) and "temperature" (J) ~ exp(-J/T)
-
-        if s is None:
-            s = self.get_critical_s()
-
-        self.s = s
-
-        # TRANSITION RATES
-
-        # As in Elmatad et al., we have chosen to set lambda, the overall rate of the fast processes to be equal to 1.
-
-        self.rate_swap = self.get_rate_swap_from_s(s)
-        self.get_neighbor_constraint = lambda neighbors: (np.sum(neighbors) + np.size(neighbors) * self.eps / 2) # C_i in Elmatad et al.
-        self.get_rate_activation = lambda neighbors:  (self.gamma * self.get_neighbor_constraint(neighbors))
-        self.get_rate_inactivation = lambda neighbors:  self.get_neighbor_constraint(neighbors)
-
-        # TRANSITION PROBABILITIES
-
-        # Elmatad et al. describes these processes in terms of rates.
-        # To get probability that any timestep a transition occurs from rates we use the formula
-
-        # DEBUGGING
-
-        # Just to make sure that the determined rates have the right order of magnitude
-
-        logging.info("Neighboring spins; Rate activation; Rate inactivation")
-        for neighbors in [np.array([1, 1]), np.array([1,0 ]), np.array([0, 1]), np.array([0, 0])]:
-            logging.info("Neighbors {}".format(neighbors))
-            logging.info("Rate Activation {}".format(self.get_rate_activation(neighbors)))
-            logging.info("Rate Deactivation {}".format(self.get_rate_inactivation(neighbors)))
-
-        logging.info("Biasing field: {}".format(self.s))
-        logging.info("Rate swap: {}".format(self.rate_swap))
-
-    def get_rate_swap_from_s(self, s):
-        # Formula 4 in Elmatad et al.
-        return (1. - self.gamma + np.sqrt(np.square(1. - self.gamma) + 4. * np.exp(-s) * self.gamma)) / 2.
-
-    def get_critical_s(self):
-        # Shorthand for convenience:
-        D = self.get_rate_swap_from_s
-
-        # Formula 5 in Elmatad et al.:
-        lhs = lambda s: (1. - self.gamma) / (1. + self.eps)
-        rhs = lambda s: np.sqrt((1. - self.gamma - D(s) * np.square(1 - np.exp(-s))) +4. * np.exp(-2. * s) * self.gamma) - (1. - np.exp(-s) * D(s))
-
-        # We use a root-solver to find values of s such that this equality holds
-        # Since the right-hand-side minus the left-hand-side should equal 0,
-        # where we compute D as a function of s.
-        sol = optimize.root_scalar(lambda s: rhs(s) - lhs(s), x0=0, x1=.1)
-
-        # TODO: In Elmatad et al., the derived values are in the order of 0.0001-0.01
-        # However, this method seems to produce values around .3-.5
-        return sol.root
-
-    @staticmethod
-    def _get_neighbors(index, state):
-        neighbors = []
-
-        # NOTE: We are usingperiodic boundary conditions
-        if index == 0:
-            neighbors = [state[index + 1], state[len(state) - 1]]
-        elif index == len(state) - 1:
-            neighbors = [state[index - 1], state[0]]
-        else:
-            neighbors = [state[index - 1], state[index + 1]]
-
-        return np.array(neighbors)
-
-    @staticmethod
-    def _flip(state, i):
-        """
-        Maps 0 -> 1 or 1 -> 0 at index ``i`` in ``state``
-        """
-        state[i] = 1 - state[i]
-        return state
-
-    def _swap(self, state, i):
-        """
-        Flips spins ``i`` and ``i+1``.
-
-        Since we are using periodic boundary conditions,
-        if ``i`` is the last index in state, ``i+1`` is the first index.
-        """
-        state[i], state[(i + 1) % self.num_sites] = state[(i + 1) % self.num_sites], state[i]
-        return state
-
-    def _step(self, state):
-
-        """
-        The probability of switching to a particular state C' is
-
-        P(C -> C') = W(C -> C') / r(C),
-        where W(C -> C') is the rate of switching to that state C', and
-        where r(C) = sum_{C'} W(C -> C') is the sum of all transition rates
-
-        The set of possible C' given C are all sites within one flip or swap of C.
-
-        See (pg 2. top-left): https://www.researchgate.net/publication/7668956_Chaotic_Properties_of_Systems_with_Markov_Dynamics
-        """
-        i = np.random.choice(np.arange(self.num_sites, dtype=np.int32))
-        neighbors = self._get_neighbors(i, state)
-
-        swap_weight = 0
-        flip_weight = 0
-
-        if state[i] == 0:
-            # For an immobile state we are interested in the possibilitie of activation.
-
-            flip_weight = self.get_rate_activation(neighbors)
-
-            # There is also the possibility of swapping [0, 1] -> [1, 0]
-            if  state[(i + 1) % self.num_sites] == 1:
-                swap_weight = self.rate_swap
-
-        else:
-            flip_weight = self.get_rate_inactivation(neighbors)
-
-            # There is also the possibility of swapping [1, 0] -> [0, 1]
-            if state[(i + 1) % self.num_sites] == 0:
-                swap_weight = self.rate_swap
-
-        total_weight = swap_weight + flip_weight
-
-        # Step 2: Decide whether or not to update the state
-        # NOTE: This is the step I am most uncertain about!!
-        if (np.random.uniform() > np.exp(-total_weight)):
-            return state
-
-        # Step 3: If we update, decide whether to flip or swap
-        flip_prob = flip_weight / total_weight
-        swap_prob = swap_weight / total_weight
-
-        choice = np.random.uniform()
-
-        if choice < flip_prob:
-            state[i] = 1 - state[i]
-        else:
-            state[i], state[(i + 1) % self.num_sites] = state[(i + 1) % self.num_sites], state[i]
-
-        return state
-
-    def activity(self, trajectory):
-        activity = 0.
-        for i in range(self.num_steps - 1):
-            if not np.isclose(trajectory[i, :], trajectory[i + 1, :]).all():
-                activity += 1.
-
-        # NOTE: Elmatad et al. mention dividing by N t_obs, but that doesn't really make sense
-        # when there is only one local change in successive configurations
-        return activity / (self.num_steps) # This is the intensive activity
 
 class TransitionPathSampler(object):
     """
@@ -578,7 +380,6 @@ class FAIsingModel(KCM):
                 if np.random.uniform() < min(1., np.exp(-dE)):
                     tmp_state[index], tmp_state[index + direction] = tmp_state[index + direction], tmp_state[index]
 
-
         return tmp_state
 
 
@@ -675,8 +476,6 @@ class FAIsingModel(KCM):
         """
         return int(state[i] == state[j])
 
-
-
 def draw_trajectory(trajectory):
     """
     :param (np.array) trajectory: A trajectory of shape
@@ -721,7 +520,7 @@ def sfa_parameter_search(eps_, s_, draw=False):
             if draw:
                 print("Activity: {}".format(fa_kcm.activity(trajectory)))
                 draw_trajectory(trajectory)
-    
+
     plt.figure()
     for i in range(len(eps_)):
         print(activations[i, :])
@@ -754,8 +553,6 @@ def east_parameter_search(s_):
 
 
 if __name__ == "__main__":
-    # steps = 50
-    # east_parameter_search(np.arange(-0.5, 0.5, 1./steps))
 
     east_kcm = EastKCM(prob_transition=-0.3, num_burnin_steps=0, num_sites=60, num_steps=100000)
     trajectory = east_kcm.gen_trajectory()
@@ -772,4 +569,3 @@ if __name__ == "__main__":
     plt.figure()
     plt.scatter(x=np.arange(len(activity_)), y=activity_)
     plt.show()
-        
