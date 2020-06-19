@@ -265,11 +265,11 @@ class OneSpinFAKCM(KCM):
         self.prob_swap = prob_swap
 
     def _step(self, state):
-        
+
         dummie_state = state
 
         for i in range(len(state)):
-            constraint = self._flip_constraint(state, index)
+            constraint = self._flip_constraint(state, i)
             probability_of_flip = abs(state[i] - self.prob_flip)
 
             if constraint == 1 and np.random.uniform() < probability_of_flip:
@@ -282,6 +282,8 @@ class OneSpinFAKCM(KCM):
                     state = self._swap(state, i, direction='left')
                 else:
                     state = self._swap(state, i, direction = np.random.choice(['left', 'right']))
+        
+        return state
                     
     def _swap(self, state, index, direction='right'):
 
@@ -490,82 +492,4 @@ def draw_trajectory(trajectory):
     plt.xlabel("Time step")
     plt.title("Trajectory")
 
-    plt.show()
-
-
-def sfa_parameter_search(eps_, s_, draw=False):
-    """
-    Perform a grid search for the paramers `eps` and `s` and visualize the results.
-
-    :param list eps_: list of values for eps that will be considered
-    :param list s_: list of values for s that will be considered
-    :param bool draw: If True will draw the trajectories that have been generated. The trajectories are shown and not saved.
-    """
-
-    # check if input is correct
-    assert len(eps_) > 0
-    assert len(s_) > 0
-
-    activations = np.zeros((len(eps_), len(s_)))
-
-    for i, eps in enumerate(eps_):
-        for j, s in enumerate(s_):
-            print("Softening parameter, epsilon: {}; Biasing field, s: {}".format(eps, s))
-            fa_kcm = SoftenedFA(gamma=0.25, s=-s, eps=eps, num_burnin_steps=0, num_sites=60, num_steps=600)
-            trajectory = fa_kcm.gen_trajectory()
-            tps = TransitionPathSampler(fa_kcm, fa_kcm.activity)
-            tps.mc_average(100)
-            activations[i,j] = fa_kcm.activity(trajectory)
-
-            if draw:
-                print("Activity: {}".format(fa_kcm.activity(trajectory)))
-                draw_trajectory(trajectory)
-
-    plt.figure()
-    for i in range(len(eps_)):
-        print(activations[i, :])
-        plt.scatter(x=s_, y=activations[i, :], label="eps = {}".format(eps_[i]))
-    plt.legend()
-    plt.ylim(0,1)
-    plt.xlabel("s")
-    plt.ylabel("k(s)")
-    plt.show()
-
-def east_parameter_search(s_):
-
-    assert len(s_) > 0
-
-    activations = []
-
-    for s in s_:
-        east_kcm = EastKCM(prob_transition=s, num_burnin_steps=0, num_sites=60, num_steps=600)
-        trajectory = east_kcm.gen_trajectory()
-        tps = TransitionPathSampler(east_kcm, east_kcm.activity)
-        activations.append(tps.mc_average(100))
-
-    plt.figure()
-    for i in range(len(s_)):
-        plt.scatter(x=s_, y=activations)
-    plt.xlabel("s")
-    plt.ylabel("average activation of 100 samples")
-    plt.show()
-
-
-
-if __name__ == "__main__":
-
-    east_kcm = EastKCM(prob_transition=-0.3, num_burnin_steps=0, num_sites=60, num_steps=100000)
-    trajectory = east_kcm.gen_trajectory()
-    print(trajectory.shape)
-
-    step_size = 100
-    activity_ = []
-    for i in range(0, east_kcm.num_steps - step_size, step_size):
-        activity = 0.
-        for j in range(i*step_size, (i+1)*step_size):
-            activity += np.sum(trajectory[i, :] != trajectory[i + 1, :])
-        activity_.append(activity / (east_kcm.num_sites * step_size))
-    
-    plt.figure()
-    plt.scatter(x=np.arange(len(activity_)), y=activity_)
     plt.show()
