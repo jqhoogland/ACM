@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import scipy.optimize as optimize
 from tqdm.notebook import tqdm
 
-class ContinuousTimeKCM(object):
+class DiscreteTimeKCM(object):
     """
 
     For convenience sake, we interpret the spins as occupation numbers $$0, 1$$
@@ -15,14 +15,13 @@ class ContinuousTimeKCM(object):
 
     """
 
-    def __init__(self, num_sites, num_steps, num_burnin_steps=0):
+    def __init__(self, num_sites, num_steps, num_burnin_steps=0, time_step=0.001):
         """
-        :param float trans_prob: The probability (with value in range [0, 1])
-            of a spin flipping if its right neighbor is up (i.e. =1).
         :param int num_sites: The number of sites to include in the chain.
         :param int num_steps: The number of steps to include in a trajectory.
         :param int num_burnin_steps: The number of steps to equilibrate a
             randomly initialized configuration.
+        :param float time_step: The duration of the discretized time step
 
         """
         assert num_sites > 1
@@ -30,39 +29,23 @@ class ContinuousTimeKCM(object):
         self.num_sites = num_sites
         self.num_steps = num_steps
         self.num_burnin_steps = num_burnin_steps
+        self.time_step = time_step
 
     def _step(self, state):
         raise NotImplementedError("")
 
-    def _energy(self, state):
-        return -np.log(self.gamma) * np.sum(state)
+    def gen_init_state(self):
+        """
+        Generates a state with a proportion of active spins equal, on average,
+        to ``self.equilibrium_activation``
 
-    def _accept_state(self, state, new_state):
-        return np.random.uniform() < min(1, np.exp(self._energy(state) - self._energy(new_state)))
+        """
 
-    def _equilibrate(self, state, num_equilibration_steps, draw=True):
-        evolution = np.zeros((num_equilibration_steps, state.size))
-
-        def step(state):
-            i = np.random.choice(np.arange(state.size))
-            state[i] = 1 - state[i]
-            return state
-
-        for i in range(num_equilibration_steps):
-            tmp_state = np.copy(state)
-            tmp_state = step(tmp_state)
-
-            # Does this need to incorporate gamma in some way?
-            if self._accept_state(state, tmp_state):
-                state = tmp_state
-
-            evolution[i, :] = state[:]
-
-        if draw:
-            draw_discrete_trajectory(evolution, "Thermodynamic equilibration of the initial spatial configuration", "Time step", "Site")
-            draw_average_plot(np.mean(evolution, axis=1), "Ratio of active to inactive sites over time", "Time step", "Ratio active:inactive sites")
-
-        return state
+        return np.random.choice(
+            [0, 1],
+            size=(self.num_sites, ),
+            p=[(1. - self.equilibrium_activation), self.equilibrium_activation]
+        )
 
     def gen_trajectory(self, init_state=None, num_equilibration_steps=1000, draw=True):
         """
@@ -84,51 +67,40 @@ class ContinuousTimeKCM(object):
         state = init_state
 
         if init_state is None:
-            state = np.random.choice([0, 1], size=(self.num_sites, ))
-            state = self._equilibrate(state, num_equilibration_steps, draw)
+            state = self.gen_init_state()
 
         assert state.shape == (self.num_sites,)
 
         burnin_trajectory = np.zeros((self.num_burnin_steps, self.num_sites))
-        burnin_occupation_times = np.zeros(self.num_burnin_steps)
         for i in range(self.num_burnin_steps - 1): # -1 because we update state once more in the forloop below.
-            state, time = self._step(state)
+            state = self._step(state)
             burnin_trajectory[i, :] = state
-            burnin_occupation_times[i] = time
 
         trajectory = np.zeros((self.num_steps, self.num_sites))
-        occupation_times = np.zeros(self.num_steps)
         for i in range(self.num_steps):
-            state, time = self._step(state)
+            state = self._step(state)
             trajectory[i, :] = state
-            occupation_times[i] = time
 
         if draw:
-            draw_trajectory(burnin_trajectory, burnin_occupation_times, "Burn-in period")
-            draw_trajectory(trajectory, occupation_times, "Trajectory")
+            draw_trajectory(burnin_trajectory, "Burn-in period")
+            draw_trajectory(trajectory, "Trajectory")
 
-        return trajectory, occupation_times
+        return trajectory
 
-    def fixed_time_activity(self, trajectory, occupation_times, time_period):
-        i = 0
-        time = occupation_times[0]
+    def activity_intensive(self, trajectory):
+        return self.activity(trajectory) / (self.num_sites * len(trajectory) * self.time_step)
 
-        while time < time_period and i < len(occupation_times) - 1:
-            i += 1
-            time += occupation_times[i]
+    def activity(self, trajectory):
+        activity = 0
 
-        activity = time_period * 1. / i
-
-        if i == len(occupation_times) - 1:
-            logging.warning("Fixed time {} exceeded limit {}.".format(time_period, np.sum(occupation_times)))
-            activity = self.activity(trajectory, occupation_times)
+        for i in range(1, len(trajectory)):
+            if not (trajectory[i]== trajectory[i - 1]).all():
+                activity += 1
 
         return activity
 
-    def activity(self, trajectory, occupation_times):
-        return 1. * len(trajectory) / (self.num_sites * np.sum(occupation_times))
 
-class SoftenedFA(ContinuousTimeKCM):
+class SoftenedFA(DiscreteTimeKCM):
 
     """
 
@@ -157,7 +129,7 @@ class SoftenedFA(ContinuousTimeKCM):
 
     """
 
-    def __init__(self, s=None, eps=0., gamma=1., num_sites=50, num_steps=100, num_burnin_steps=0):
+    def __init__(self, s=None, rate_swap=None, eps=0., gamma=1., num_sites=50, num_steps=100, num_burnin_steps=0, time_step=0.005):
         """
         :param float s: The biasing field that determines the rate of swaps. Defaults to the critical biasing field value.
         :param float eps: The amount of softening; this allows immobile regions a small probability of becoming mobile
@@ -168,45 +140,62 @@ class SoftenedFA(ContinuousTimeKCM):
             randomly initialized configuration.
 
         """
-        super(SoftenedFA, self).__init__(num_sites=num_sites, num_steps=num_steps, num_burnin_steps=num_burnin_steps)
+        super(SoftenedFA, self).__init__(num_sites=num_sites, num_steps=num_steps, num_burnin_steps=num_burnin_steps, time_step=time_step)
 
-        # MODEL PARAMETERS
         self.eps = eps # This captures "activation energy" (U) and "temperature" (T) ~ exp(-U/T)
         self.gamma = gamma # This captures "coupling energy" (J) and "temperature" (J) ~ exp(-J/T)
+
+
+        # $\gamma = c / (1 - c )$ where $c$ is the equilibrium concentration of active spins.
+        # This is needed to initialize the first configuration in the trajectory
+        self.equilibrium_activation = self.gamma / (1 + self.gamma)
+
+        # s and rate_swap are related to one another by formula 4 in Elmatad et al.
+        # We can provide either to derive the other.
+        # If both are provided, we use rate_swap, and derive s from the rate_swap.
 
         if s is None:
             s = self.get_critical_s()
 
+        if rate_swap is None:
+            rate_swap = self.get_rate_swap_from_s(s)
+        else:
+            s = self.get_s_from_rate_swap(rate_swap)
+
         self.s = s
+        self.rate_swap = rate_swap
 
-        # TRANSITION RATES
-
-        # As in Elmatad et al., we have chosen to set lambda, the overall rate of the fast processes to be equal to 1.
-
-        self.rate_swap = self.get_rate_swap_from_s(s)
+        # Functions to derive Transition Rates from a spin and its neighbors
         self.get_neighbor_constraint = lambda neighbors: (np.sum(neighbors) + self.eps) # C_i in Elmatad et al.
         self.get_rate_activation = lambda neighbors: self.gamma * self.get_neighbor_constraint(neighbors)
         self.get_rate_inactivation = lambda neighbors:  self.get_neighbor_constraint(neighbors)
         self.get_rate_swap = lambda site, neighbors: float(site != neighbors[-1]) * self.rate_swap
 
-        # TRANSITION PROBABILITIES
+        # The g term is needed to counter the effects of closed time boundaries
+        self.z = np.exp(-self.s)
+        self.alpha = np.arctan(2. * self.z * np.sqrt(self.gamma) / ( - self.rate_swap * (1 - self.z))) / 2.
 
-        # Elmatad et al. describes these processes in terms of rates.
-        # To get probability that any timestep a transition occurs from rates we use the formula
+        self.g = np.log(np.abs(np.tan(self.alpha / 2.)))
+
+        print("alpha {}, g {}".format(self.alpha, self.g))
 
         # DEBUGGING
+        logging.info("Biasing field: {}".format(self.s))
+        logging.info("Rate swap: {}".format(self.rate_swap))
 
-        # Just to make sure that the determined rates have the right order of magnitude
-
-        logging.info("Neighboring spins; Rate activation; Rate inactivation")
         for neighbors in [np.array([1, 1]), np.array([1,0 ]), np.array([0, 1]), np.array([0, 0])]:
             logging.info("Rate Flip (activation) [{0}, 0, {1}]-> [{0}, 1, {1}]: {2}".format(neighbors[0], neighbors[ -1], self.get_rate_activation(neighbors)))
             logging.info("Rate Flip (deaactivation)[{0}, 1, {1}]-> [{0}, 0, {1}]: {2} ".format(neighbors[0], neighbors[ -1], self.get_rate_inactivation(neighbors)))
             logging.info("Rate swap [{0}, 0, {1}] -> [{0}, {1}, 0]: {2}".format(neighbors[0], neighbors[-1], self.get_rate_swap(0, neighbors)))
             logging.info("Rate swap [{0}, 1, {1}] -> [{0}, {1}, 1]: {2}".format(neighbors[0], neighbors[-1], self.get_rate_swap(1, neighbors)))
 
-        logging.info("Biasing field: {}".format(self.s))
-        logging.info("Rate swap: {}".format(self.rate_swap))
+
+    def get_s_from_rate_swap(self, rate_swap):
+        # Formula 4. in Elmatad et al. inverted to get s from D
+        arg = (np.square(2 * rate_swap + self.gamma -1) - np.square(1 - self.gamma)) / (4. * self.gamma)
+        if arg == 0:
+            return np.inf
+        return -np.log(arg)
 
     def get_rate_swap_from_s(self, s):
         # Formula 4 in Elmatad et al.
@@ -229,17 +218,10 @@ class SoftenedFA(ContinuousTimeKCM):
 
     @staticmethod
     def _get_neighbors(index, state):
-        neighbors = []
-
-        # NOTE: We are usingperiodic boundary conditions
-        if index == 0:
-            neighbors = [state[index + 1], state[len(state) - 1]]
-        elif index == len(state) - 1:
-            neighbors = [state[index - 1], state[0]]
-        else:
-            neighbors = [state[index - 1], state[index + 1]]
-
-        return np.array(neighbors)
+        """
+        We use periodic boundaries, so the first and last spins are also neighbors.
+        """
+        return np.array([state[(index - 1) % len(state)], state[(index + 1) % len(state)]])
 
     @staticmethod
     def _flip(state, i):
@@ -260,6 +242,18 @@ class SoftenedFA(ContinuousTimeKCM):
         return state
 
     def get_transition_rates(self, state):
+        """
+        For a state of ``self.num_sites`` spins, there are ``2 * self.num_sites``
+        possible transitions.
+        - ``self.num_sites`` possible sites to flip
+        - ``self.num_sites`` possible pairs to swap
+
+        If a transition is prohibited, then we assign a transition rate of 0.
+
+        :returns (swap_rates, flip_rates): the respect transition rates for swaps
+        and flips at each of these sites.
+
+        """
         swap_rates = np.zeros(self.num_sites)
         flip_rates = np.zeros(self.num_sites)
 
@@ -279,21 +273,18 @@ class SoftenedFA(ContinuousTimeKCM):
 
     def get_transition_times(self, rates):
         """
-        Creates an array of exponentially distributed times for each rate in rates.
+        Creates an array of exponentially distributed times, $t$ for each rate,
+        $r$ in ``rates``.
 
-        i.e. inverts f(x; r) to get x where
-
-        f(x; r) = r exp(-r x)
-
-        is the pdf, and r is the rate.
-
-        Then the cdf is
-
-        c(x; r) = 1 - exp(-rx)
+        $PDF(t; r) = r exp(-r t)$
+        $CDF(t; r) = 1 - exp(-rt)$
 
         with inverse
+        $t = - np.log(1 - CDF(t; r)) / r$
 
-        x = - np.log(1 - c(x; r)) / r
+        If we uniformly generate a $CDF(t; r) \in [0, 1]$, we can use this inverted
+        formula to get a suitable time $t$
+
         """
 
         times = -np.log(1 - np.random.uniform(size=rates.size)) / rates
@@ -316,30 +307,28 @@ class SoftenedFA(ContinuousTimeKCM):
         See (pg 2. top-left): https://www.researchgate.net/publication/7668956_Chaotic_Properties_of_Systems_with_Markov_Dynamics
         """
         # STEP 1. DETERMINE RATES W(C -> C')
-
         swap_rates, flip_rates = self.get_transition_rates(state)
 
         # STEP 2. DETERMINE CLOCK TIMERS
-
         swap_times = self.get_transition_times(swap_rates)
         flip_times = self.get_transition_times(flip_rates)
 
+        # STEP 3. DETERMINE THE MINIMUM TRANSITION TIME (of both swaps and flips)
         min_swap_time_idx = np.argmin(swap_times)
         min_flip_time_idx = np.argmin(flip_times)
 
         min_swap_time = swap_times[min_swap_time_idx]
         min_flip_time = flip_times[min_flip_time_idx]
 
-        time = 0
-
-        if min_swap_time < min_flip_time:
+        # STEP 4. UPDATE (OR NOT) THE STATE
+        # If the minimum transition time is shorter than our discrete timestep,
+        # we update the state, otherwise we leave our state as is.
+        if min_swap_time < min_flip_time and min_swap_time < self.time_step:
             state = self._swap(state, min_swap_time_idx)
-            time = min_swap_time
-        else:
+        elif min_flip_time < self.time_step:
             state = self._flip(state, min_flip_time_idx)
-            time = min_flip_time
 
-        return state, time
+        return state
 
 class TransitionPathSampler(object):
     """
@@ -356,96 +345,104 @@ class TransitionPathSampler(object):
         self.num_steps = kcm.num_steps
         self.observable = observable
 
-    def _half_shoot(self, trajectory, occupation_times):
+    def _half_shoot(self, trajectory):
+        """
+        Choose a random index of the trajectory, and remainder of the trajectory
+        starting at that index.
+        """
         i = np.random.choice(np.arange(self.kcm.num_sites, dtype=np.int32))
 
         for j in range(i, self.kcm.num_steps -1):
-            trajectory[j + 1, :], occupation_times[j + 1] = self.kcm._step(trajectory[j, :])
+            trajectory[j + 1, :] = self.kcm._step(trajectory[j, :])
 
-        return trajectory, occupation_times
+        return trajectory
 
-    def _shift(self, trajectory, occupation_times):
+    def _shift(self, trajectory):
+        """
+        Choose a random index of the trajectory as the new starting point,
+        and extend the end of the trajectory until you reach a trajectory of the
+        same duration.
+        """
         i = np.random.choice(np.arange(self.kcm.num_sites, dtype=np.int32))
 
         trajectory[:self.kcm.num_steps - i, :] = trajectory[i:, :]
-        occupation_times[:self.kcm.num_steps - i] = occupation_times[i:]
 
         for j in range(self.kcm.num_steps - i, self.kcm.num_steps -1):
-            trajectory[j + 1, :], occupation_times[j + 1]= self.kcm._step(trajectory[j, :])
+            trajectory[j + 1, :] = self.kcm._step(trajectory[j, :])
 
-        return trajectory, occupation_times
+        return trajectory
 
-    def _step(self, trajectory, occupation_times):
-        # With equal probability we either half-shoot or shift.
+    def _step(self, trajectory):
+        """
+        We use half-shooting or shifting with equal likelihood.
+        """
         if np.random.uniform() < 0.5:
-            return self._half_shoot(trajectory, occupation_times)
+            return self._half_shoot(trajectory)
         else:
-            return self._shift(trajectory, occupation_times)
+            return self._shift(trajectory)
 
-    def get_trajectory_weight(self, trial_trajectory, occupation_times):
-        # See ``accept_trajectory``
-        # By default, we except all newly generated trajectories.
-        return 1.
+    def get_trajectory_weight(self, trial_trajectory):
+        raise NotImplementedError
 
     @staticmethod
     def accept_trajectory(energy_prev, energy_curr):
-        # By default, we except all newly generated trajectories.
-        return True
+        """
+        The simple Metropolis-Hastings condition.
+        """
+        return np.random.uniform() < min(1, np.exp(energy_prev - energy_curr))
 
     def mc_samples(self, num_samples, num_burnin_steps=0, draw=False, draw_every=10):
         # TODO: also measure the standard deviations (or do a fancier binning analysis)!
 
         # Prepare the initial trajectory
-        trajectory, occupation_times= self.kcm.gen_trajectory(draw=draw)
+        trajectory= self.kcm.gen_trajectory(draw=draw)
 
         # Allocate space for the trial trajectory
         trial_trajectory = np.copy(trajectory)
-        trial_occupation_times = np.copy(occupation_times)
 
         # We will associate an "energy" to each trajectory, and use to
         # sample the trajectory space according to a Metropolis-Hastings condition
-        energy = self.get_trajectory_weight(trajectory, occupation_times)
+        # This ``get_trajectory_weight`` is implemented in child classes.
+        energy = self.get_trajectory_weight(trajectory)
 
-        # First, we proceed with a number of burn-in sequences.
-        # In principle, this is unnecessary, since we have already accomplished
-        # this in generating the trajectory.
+        # STEP 1. EQUILIBRATE THE TRAJECTORY
+        # We also make measurements of the observable through this period so we
+        # can verify that equilibration is taking place.
         burnin_measurements = np.zeros(num_burnin_steps)
         for i in tqdm(range(num_burnin_steps), desc="Equilibrating TPS"):
-            burnin_measurements[i] = self.observable(trajectory, occupation_times)
+            burnin_measurements[i] = self.observable(trajectory)
 
-            # Copy the trajectory into trial first so we don't change trial in place
+            # We copy the trajectory into the trial since numpy updates matrices
+            # in-place.
             trial_trajectory[:, :] = trajectory[:, :]
-            trial_occupation_times[:] = occupation_times[:]
-            trial_trajectory, trial_occupation_times = self._step(trial_trajectory, trial_occupation_times)
-            trial_energy = self.get_trajectory_weight(trial_trajectory, trial_occupation_times)
+            trial_trajectory = self._step(trial_trajectory)
+            trial_energy = self.get_trajectory_weight(trial_trajectory)
 
             if self.accept_trajectory(energy, trial_energy):
                 trajectory[:, :] = trial_trajectory[:, :]
-                occupation_times[:]= trial_occupation_times[:]
                 energy = trial_energy
 
             if draw and (i + 1) % draw_every == 0:
-                draw_trajectory(trajectory, occupation_times, title="Burn-in iteration {}".format(i + 1))
+                draw_trajectory(trajectory, title="Burn-in iteration {}".format(i + 1))
 
         proportion_active = np.zeros(num_samples)
         measurements = np.zeros(num_samples)
         for i in tqdm(range(num_samples), desc="Generating TPS samples"):
-            measurements[i] = self.observable(trajectory, occupation_times)
-            proportion_active[i] = np.mean(discretize_trajectory(trajectory, occupation_times))
+            measurements[i] = self.observable(trajectory)
+            proportion_active[i] = np.mean(trajectory)
 
-            # Copy the trajectory into trial first so we don't change trial in place
+            # We copy the trajectory into the trial since numpy updates matrices
+            # in-place.
             trial_trajectory[:, :] = trajectory[:, :]
-            trial_occupation_times[:] = occupation_times[:]
-            trial_trajectory, trial_occupation_times= self._step(trial_trajectory, trial_occupation_times)
-            trial_energy = self.get_trajectory_weight(trial_trajectory, trial_occupation_times)
+            trial_trajectory= self._step(trial_trajectory)
+            trial_energy = self.get_trajectory_weight(trial_trajectory)
 
             if self.accept_trajectory(energy, trial_energy):
                 trajectory[:, :] = trial_trajectory[:, :]
-                occupation_times[:]= trial_occupation_times[:]
                 energy = trial_energy
 
             if draw and (i + 1) % draw_every == 0:
-                draw_trajectory(trajectory, occupation_times, title="TPS sample {}".format(i + 1))
+                draw_trajectory(trajectory, title="TPS sample {}".format(i + 1))
 
         if draw:
             draw_average_plot(burnin_measurements, "Activity over TPS Burn-in Period", "TPS step", "Activity")
@@ -457,47 +454,24 @@ class TransitionPathSampler(object):
     def mc_average(self, num_samples, num_burnin_steps=0, draw=False, draw_every=10):
         return np.mean(self.mc_samples(num_samples, num_burnin_steps, draw, draw_every))
 
+    def error_analysis(self, measurements):
+        """
+        Perform a binning analysis of the error in measurements.
+        This is needed since the measurements are auto-correlated.
+
+        TODO: implement this.
+        """
+        return np.std(measurements)
+
+    def mc_analysis(self, num_samples, num_burnin_steps=0, draw=False, draw_every=10):
+        measurements = (self.mc_samples(num_samples, num_burnin_steps, draw, draw_every))
+        return np.mean(measurements), self.error_analysis(measurements)
+
 class SoftenedFATPS(TransitionPathSampler):
-    def __init__(self, *args):
-        """
-        docstring
-        """
-        super(SoftenedFATPS, self).__init__(*args)
-        self.alpha = np.arctan(2. * np.exp(-self.kcm.s) * (1. + self.kcm.eps) / (2. +self.kcm.eps - self.kcm.eps * self.kcm.gamma))
-        self.g = np.log(np.tan(self.alpha / 2.))
+    def get_trajectory_weight(self, trajectory):
+        return self.kcm.s * self.kcm.activity(trajectory) - self.kcm.g * (np.sum(trajectory[0, :] + trajectory[-1, :]))
 
-        print("alpha {}, g {}".format(self.alpha, self.g))
-
-
-    def get_trajectory_weight(self, trajectory, occupation_times):
-        #print(self.g, np.sum(trajectory[0, :] + trajectory[-1, :]))
-        return self.kcm.s * self.kcm.activity(trajectory, occupation_times) * self.kcm.num_sites * np.sum(occupation_times) - self.g * (np.sum(trajectory[0, :] + trajectory[-1, :]))
-
-    @staticmethod
-    def accept_trajectory(energy_prev, energy_curr):
-        """ The simple Metropolis condition
-        """
-        return np.random.uniform() < min(1, np.exp(energy_prev - energy_curr))
-
-def discretize_trajectory(trajectory, occupation_times, time_step=0.01):
-    trajectory_duration = np.sum(occupation_times)
-    num_transitions, num_sites = trajectory.shape
-    num_discrete_steps = int(trajectory_duration / time_step)
-    discrete_trajectory = np.zeros([num_discrete_steps, num_sites])
-
-    j = 0 # index which goes over the number of discretized steps
-    for i in range(num_transitions): # index which goes over the number of original steps
-        time_in_state = occupation_times[i]
-        num_discrete_steps_in_state = int(time_in_state / time_step)
-        if num_discrete_steps_in_state > 0:
-            discrete_trajectory[j: j + num_discrete_steps_in_state, :] = trajectory[i, :]
-
-        j += num_discrete_steps_in_state
-
-    return discrete_trajectory
-
-
-def draw_discrete_trajectory(trajectory, title, xlabel, ylabel, time_step=1.):
+def draw_trajectory(trajectory, title, xlabel="Time Step", ylabel="Site", time_step=1.):
     from matplotlib.colors import ListedColormap
 
     cmap = ListedColormap(['w', 'r'])
@@ -509,15 +483,6 @@ def draw_discrete_trajectory(trajectory, title, xlabel, ylabel, time_step=1.):
     ax.set_ylabel(ylabel)
 
     plt.show()
-
-def draw_trajectory(trajectory, occupation_times, title="Trajectory", time_step=0.01):
-    """
-    :param (np.array) trajectory: A trajectory of shape
-        (self.num_steps, self.num_sites). The rows are states.
-    """
-    discrete_trajectory = discretize_trajectory(trajectory, occupation_times, time_step)
-    draw_discrete_trajectory(discrete_trajectory, title, "Time step", "Site", time_step)
-
 
 def draw_average_plot(measurements, title, xlabel, ylabel):
     num_measurements = len(measurements)
