@@ -10,6 +10,7 @@
 # ------------------------------------------------------------
 
 import logging
+from warnings import warn
 from tqdm import tqdm
 
 import numpy as np
@@ -36,7 +37,6 @@ class KCM(object):
             randomly initialized configuration.
 
         """
-        assert prob_transition <= 1 and prob_transition >= 0
         assert num_sites > 1
 
         self.prob_transition = prob_transition
@@ -126,7 +126,7 @@ class EastKCM(KCM):
 
         """
 
-        dummie = state[0]
+        left_most_site = state[0]
 
         for i in range(self.num_sites - 1):
             if state[i + 1] == 1 and np.random.uniform() < self.prob_transition:
@@ -250,6 +250,78 @@ class OneSpinFAKCM(KCM):
     This class produces a single trajectory.
 
     """
+    def __init__(self, prob_flip, prob_swap, num_sites, num_steps, num_burnin_steps=0):
+        """
+        :param float prob_transition: The probability (with value in range [0, 1])
+            of a spin flipping if its right neighbor is up (i.e. =1).
+        :param int num_sites: The number of sites to include in the chain.
+        :param int num_steps: The number of steps to include in a trajectory.
+        :param int num_burnin_steps: The number of steps to equilibrate a
+            randomly initialized configuration.
+
+        """
+        super(OneSpinFAKCM, self).__init__(prob_flip, num_sites, num_steps, num_burnin_steps)
+        self.prob_flip = prob_flip
+        self.prob_swap = prob_swap
+
+    def _step(self, state):
+        
+        dummie_state = state
+
+        for i in range(len(state)):
+            constraint = self._flip_constraint(state, index)
+            probability_of_flip = abs(state[i] - self.prob_flip)
+
+            if constraint == 1 and np.random.uniform() < probability_of_flip:
+                state[i] = 1 - state[i]
+
+            if state[i] == 1 and np.random.uniform() < self.prob_flip:
+                if i == 0:
+                    state = self._swap(state, i)
+                elif i == len(state) - 1:
+                    state = self._swap(state, i, direction='left')
+                else:
+                    state = self._swap(state, i, direction = np.random.choice(['left', 'right']))
+                    
+    def _swap(self, state, index, direction='right'):
+
+        if direction == 'right':
+            state[index], state[index + 1] = state[index + 1], state[index]
+        elif direction == 'left':
+            state[index], state[index - 1] = state[index - 1], state[index]
+        else:
+            raise ValueError("swap direction '{}' is not valid".format(direction))
+        
+        return state
+        
+      
+    def _flip_constraint(self, state, index):
+        if index != 0 and index !=len(state)-1:
+            if state[index + 1] == 1 or state[index - 1] == 1:
+                return 1
+            else:
+                return 0
+        elif index == 0:
+            return state[1]
+        else:
+            return state[index - 1]
+            
+
+class FAIsingModel(KCM):
+    """
+
+    The one-spin Fredrickson-Andersen Model is a kinetic 1-dimensional Ising chain.
+     - It's spins are non-interacting.
+     - Spin ``i`` can flip with probability ``prob_transition`` iff spin ``i+1``
+       (to the right or left, i.e. "east") is "up"
+     - Boundaries are closed.
+
+    For convenience sake, we interpret the spins as occupation numbers $$0, 1$$
+    rather than the conventional up/down $$\pm 1$$.
+
+    This class produces a single trajectory.
+
+    """
 
     def __init__(self, prob_transition, prob_swap, num_sites, num_steps, coupling_energy, control_parameter=0., neighbor_constraint=1, num_burnin_steps=0):
         """
@@ -261,7 +333,7 @@ class OneSpinFAKCM(KCM):
             randomly initialized configuration.
 
         """
-        super(OneSpinFAKCM, self).__init__(prob_transition, num_sites, num_steps, num_burnin_steps)
+        super(FAIsingModel, self).__init__(prob_transition, num_sites, num_steps, num_burnin_steps)
         self.external_field = control_parameter
         self.coupling_energy = coupling_energy
         self.prob_swap = prob_swap
@@ -459,27 +531,41 @@ def sfa_parameter_search(eps_, s_, draw=False):
     plt.ylabel("k(s)")
     plt.show()
 
-def east_parameter_search(probs):
+def east_parameter_search(s_):
 
-    assert len(probs) > 0
+    assert len(s_) > 0
 
     activations = []
 
-    for prob in tqdm(probs):
-        east_kcm = EastKCM(prob_transition=prob, num_burnin_steps=0, num_sites=60, num_steps=600)
+    for s in s_:
+        east_kcm = EastKCM(prob_transition=s, num_burnin_steps=0, num_sites=60, num_steps=600)
         trajectory = east_kcm.gen_trajectory()
         tps = TransitionPathSampler(east_kcm, east_kcm.activity)
         activations.append(tps.mc_average(100))
 
     plt.figure()
-    for i in range(len(probs)):
-        plt.scatter(x=probs, y=activations)
-    plt.xlabel("transition probability")
+    for i in range(len(s_)):
+        plt.scatter(x=s_, y=activations)
+    plt.xlabel("s")
     plt.ylabel("average activation of 100 samples")
     plt.show()
 
 
 
 if __name__ == "__main__":
-    steps = 50
-    east_parameter_search([0 + 2e-3/steps*i for i in range(steps)])
+
+    east_kcm = EastKCM(prob_transition=-0.3, num_burnin_steps=0, num_sites=60, num_steps=100000)
+    trajectory = east_kcm.gen_trajectory()
+    print(trajectory.shape)
+
+    step_size = 100
+    activity_ = []
+    for i in range(0, east_kcm.num_steps - step_size, step_size):
+        activity = 0.
+        for j in range(i*step_size, (i+1)*step_size):
+            activity += np.sum(trajectory[i, :] != trajectory[i + 1, :])
+        activity_.append(activity / (east_kcm.num_sites * step_size))
+    
+    plt.figure()
+    plt.scatter(x=np.arange(len(activity_)), y=activity_)
+    plt.show()
