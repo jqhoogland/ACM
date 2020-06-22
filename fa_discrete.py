@@ -3,7 +3,7 @@ import logging
 import numpy as np
 import matplotlib.pyplot as plt
 import scipy.optimize as optimize
-from tqdm.notebook import tqdm
+from tqdm import tqdm
 
 class DiscreteTimeKCM(object):
     """

@@ -6,89 +6,56 @@
 
 import matplotlib.pyplot as pyplot
 import numpy as np
+import tables
+import os
 
-from kcm import *
+from fa_discrete import *
 
-def sfa_parameter_search(eps_, s_, draw=False):
+def run(eps, n_sites, t_obs, s_):
     """
-    Perform a grid search for the paramers `eps` and `s` and visualize the results.
+    Run an experiment for given parameters and save the results
 
-    :param list eps_: list of values for eps that will be considered
-    :param list s_: list of values for s that will be considered
-    :param bool draw: If True will draw the trajectories that have been generated. The trajectories are shown and not saved.
+    :param eps float: fixed value for epsilon for the sFA model
+    :param n_sites int: number of sites of the trajectories
+    :param t_obs int: number of time steps of the trajectories
+    :param s_ np.array: array of s field values for the sFA model
+
+    :return msg string: return message indicating the succes of the function
     """
+    save_dir = "results/"
+    if not os.path.exists(save_dir):
+        os.mkdir(save_dir)
+    filepath = "{}/eps={}_nSites={}_tObs={}.h5".format(save_dir, eps, n_sites, t_obs)     
 
-    # check if input is correct
-    assert len(eps_) > 0
-    assert len(s_) > 0
+    save_file = tables.open_file(filepath, mode="w")
+    atom = tables.Float64Atom()
 
-    activations = np.zeros((len(eps_), len(s_)))
-
-    for i, eps in enumerate(eps_):
-        for j, s in enumerate(s_):
-            print("Softening parameter, epsilon: {}; Biasing field, s: {}".format(eps, s))
-            fa_kcm = SoftenedFA(gamma=0.25, s=-s, eps=eps, num_burnin_steps=0, num_sites=60, num_steps=600)
-            trajectory = fa_kcm.gen_trajectory()
-            tps = TransitionPathSampler(fa_kcm, fa_kcm.activity)
-            tps.mc_average(100)
-            activations[i,j] = fa_kcm.activity(trajectory)
-
-            if draw:
-                print("Activity: {}".format(fa_kcm.activity(trajectory)))
-                draw_trajectory(trajectory)
-
-    plt.figure()
-    for i in range(len(eps_)):
-        print(activations[i, :])
-        plt.scatter(x=s_, y=activations[i, :], label="eps = {}".format(eps_[i]))
-    plt.legend()
-    plt.ylim(0,1)
-    plt.xlabel("s")
-    plt.ylabel("k(s)")
-    plt.show()
-
-def east_parameter_search(s_):
-
-    assert len(s_) > 0
-
-    activations = []
+    save_array = save_file.create_earray(save_file.root, 'data', atom,(0, 3))
+    save_file.close()
 
     for s in s_:
-        east_kcm = EastKCM(prob_transition=s, num_burnin_steps=0, num_sites=60, num_steps=600)
-        trajectory = east_kcm.gen_trajectory()
-        tps = TransitionPathSampler(east_kcm, east_kcm.activity)
-        activations.append(tps.mc_average(100))
+        sfa = SoftenedFA(s=s, eps=eps, gamma=0.25, num_sites=n_sites, num_steps=t_obs, num_burnin_steps=100)
+        trajectory = sfa.gen_trajectory(draw=False)
+        sfa_tps = SoftenedFATPS(sfa, sfa.activity)
+        k_avg, k_err = sfa_tps.mc_analysis(100)
 
-    plt.figure()
-    for i in range(len(s_)):
-        plt.scatter(x=s_, y=activations)
-    plt.xlabel("s")
-    plt.ylabel("average activation of 100 samples")
-    plt.show()
+        save_obj = np.array([[s, k_avg, k_err]])
 
-def grid_search_one_spin_fa(steps):
-    flip_probs = [i/float(steps) for i in range(steps)]
-    swap_probs = [i/float(steps) for i in range(steps)]
+        save_file = tables.open_file(filepath, mode="a")
+        save_file.root.data.append(save_obj)
+        save_file.close()
 
-    activities = np.zeros((steps, steps))
 
-    for i, flip_prob in tqdm(enumerate(flip_probs)):
-        for j, swap_prob in enumerate(swap_probs):
-            fa_model = OneSpinFAKCM(flip_prob, swap_prob, 60, 600, num_burnin_steps=0)
-            trajectory = fa_model.gen_trajectory()
-            activities[i, j] = fa_model.activity(trajectory)
-    
-    plt.figure()
-    plt.imshow(activities, extent=[0, 1, 0, 1])
-    plt.colorbar()
-    plt.xlabel("swap probability")
-    plt.ylabel("flip probability")
-    plt.title("Activity of OneSpinFAKCM for multiple parameter settings")
-    plt.show()
-            
-
+    msg = "All results saved to:{}".format(filepath)
+    return msg
 
 
 if __name__ == "__main__":
 
-    grid_search_one_spin_fa(steps=10)
+    s_ = np.array([-1, 0, 1])
+    msg = run(eps=0, n_sites=10, t_obs=10, s_=s_)
+
+    filepath = msg.split(":")[1]
+    load_file = tables.open_file(filepath, mode="r")
+    print(load_file.root.data[:, :])
+    load_file.close()
