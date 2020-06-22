@@ -454,18 +454,35 @@ class TransitionPathSampler(object):
     def mc_average(self, num_samples, num_burnin_steps=0, draw=False, draw_every=10):
         return np.mean(self.mc_samples(num_samples, num_burnin_steps, draw, draw_every))
 
-    def error_analysis(self, measurements):
-        """
-        Perform a binning analysis of the error in measurements.
-        This is needed since the measurements are auto-correlated.
+    @staticmethod
+    def mc_binning_analysis(measurements, stop_n_before=3):
+        # Used in the error analysis, implemented for assignment 3
+        bins = np.zeros(int(np.log2(measurements.size))-stop_n_before)
+        binned = measurements
+        bins[0] = np.std(binned, ddof=1)/ np.sqrt(binned.size)
 
-        TODO: implement this.
-        """
-        return np.std(measurements)
+        for i in range(1, bins.size):
+            binned = (binned + np.roll(binned, 1))[1::2]/2
+            bins[i] = np.std(binned, ddof=1) / np.sqrt(binned.size)
 
-    def mc_analysis(self, num_samples, num_burnin_steps=0, draw=False, draw_every=10):
-        measurements = (self.mc_samples(num_samples, num_burnin_steps, draw, draw_every))
-        return np.mean(measurements), self.error_analysis(measurements)
+        return bins
+
+    def mc_error(self, measurements, stop_n_before=2):
+        # we assume that the binning analysis has already converged within log_2 n_samples - 3 steps (=11 for this problem)
+        bins = self.mc_binning_analysis(measurements, stop_n_before)
+
+        return bins[-1]
+
+    def mc_autocorrelation_time(self, measurements):
+        naive_error = np.std(measurements, ddof=1)
+        true_error = self.mc_error(measurements)
+
+        return ((true_error / naive_error) ** 2 - 1) / 2
+
+    def mc_analysis(self, num_samples, num_burnin_steps=0, draw=False, draw_every=10, stop_n_before=2):
+        measurements = self.mc_samples(num_samples, num_burnin_steps, draw, draw_every)
+        return np.mean(measurements), self.mc_error(measurements, stop_n_before)
+
 
 class SoftenedFATPS(TransitionPathSampler):
     def get_trajectory_weight(self, trajectory):
@@ -473,7 +490,6 @@ class SoftenedFATPS(TransitionPathSampler):
 
 def draw_trajectory(trajectory, title, xlabel="Time Step", ylabel="Site", time_step=1.):
     from matplotlib.colors import ListedColormap
-
     cmap = ListedColormap(['w', 'r'])
     fig, ax= plt.subplots()
     ax.matshow(trajectory.T, cmap=cmap, aspect='auto')
@@ -495,3 +511,22 @@ def draw_average_plot(measurements, title, xlabel, ylabel):
     plt.ylabel(ylabel)
     plt.ylim(top=1., bottom=0.)
     plt.show()
+
+def draw_activity_for_fixed_eps(eps, s_vals, activity_means, activity_errs=None):
+    """
+
+    :param (float) eps: The value of epsilon (used for labelling the curve).
+    :param (np.array of shape [num_s_vals, ]) s_vals: The values of the s field
+        for which observables have been measured
+    :param (np.array of shape [num_s_vals, ]) activity_means: The average activity
+        corresponding to the values of s in ``s_vals``
+    :param (Optional np.array of shape [num_s_vals, ]) activity_errors: The error
+        of activity corresponding to the values of s in ``s_vals``. If not provided,
+        defaults to None, and the error bars are not included in the plot.
+    """
+
+    plt.errorbar(s_vals, activity_means, label="$\epsilon={}$".format(eps), yerr=activity_errs)
+    plt.title("Activity as a function of $s$ for fixed $\epsilon$")
+    plt.xlabel("Dynamical Field, $s$")
+    plt.ylabel("Activity, $K$")
+    plt.legend()
