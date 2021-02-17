@@ -11,9 +11,10 @@ We looked at:
 - The East model
 - The one-spin Fredrickson-Andersen Model
 
-on a one-dimensional chain. 
+on a one-dimensional chain in both discrete and continuous time. 
 
 We weren't as successful as we hoped: likely because we needed to throw more computational power at longer simulations.
+(or because of bugs we never isolated)
 
 ---
 
