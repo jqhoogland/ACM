@@ -3,9 +3,9 @@ Exercises for a course in my Masters: Advanced Computational Methods in Condense
 
 ---
 
-### Overview
+### Project Overview
 
-Together with [Guido Visser](https://github.com/GuidoVisser), we simulated kinetically-constrained on-lattice models to study the glass transition.
+Together with [Guido Visser](https://github.com/GuidoVisser), I simulated kinetically-constrained on-lattice models to study the glass transition.
 
 We looked at:
 - The East model
